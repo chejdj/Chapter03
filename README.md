@@ -98,3 +98,34 @@ Substrate 一款经典的 hook 框架
 [fbjni](https://github.com/facebookincubator/profilo/tree/master/deps/fbjni) 是从 Facebook 开源的一款jni工具类库，主要提供了工具类，ref utils ，Global JniEnv。
 
 [ndk_dlopen](https://github.com/rrrfff/ndk_dlopen) 提供了force dlopen 机制
+
+前提知识：
+1. Java可以用反射来hook，C++没有反射但是同样可以hook。MSHookFunction 就是这样一个框架，支持hook C/C++代码， http://www.cydiasubstrate.com/api/c/MSHookFunction/
+2. ndk_dlopen 和 ndk_dlsym 。前者是用来获取动态链接库，后者是通过获取到前者的动态链接库之后获取函数地址的。
+3. C/C++在链接之前会把函数的名字mangled, 我们在ndk_dlsym函数里面需要填mangled之后的函数名， -》 _ZN3art3Dbg21DumpRecentAllocationsEnv
+4. facebook::jni::这个应该是调用文章中说到的那个facebook的jni的开源框架。 JNIEnv *env 这个是一个全局的JNI环境变量，储存了变量，还有很多JNI的函数供开发者使用。比如代码中的env->GetArrayLength(saveData.data);
+
+调用流程就是：
+1. 首先先调用了tracker.initForArt， 并且调用了JNI方法initForArt。所谓的初始化其实就是使用ndk_dlsym 拿到各个要hook的函数。比如artSetAllocTrackingEnable ，就是开启/关闭tracking的，源代码中有一行:
+
+artSetAllocTrackingEnable = (void (*)(bool)) ndk_dlsym(libHandle,
+"_ZN3art3Dbg23SetAllocTrackingEnabledEb");
+
+这里注意并没有开启函数，只是拿到函数句柄而已。
+2. void hookFunc() , 这个方法就是真正的把系统的tracking 函数hook调的地方。
+
+比如 先调用 void *hookRecordAllocation26 = ndk_dlsym(handle,
+"_ZN3art2gc20AllocRecordObjectMap16RecordAllocationEPNS_6ThreadEPNS_6ObjPtrINS_6mirror6ObjectEEEj");
+
+这里注意是拿到函数的地址而不是句柄。
+
+然后 调用hook -> MSHookFunction(hookRecordAllocation26, (void *) &newArtRecordAllocation26,
+(void **) &oldArtRecordAllocation26);
+通过这个函数把newArtRecordAllocation26 hook进原函数地址里，同时拿到旧函数的实现并导向oldArtRecordAllocation26。保留旧函数的原因是还需要使用旧函数的一些功能。
+
+3. 最后我们可以看到hook的新函数，做了一个大小的判断。 if (allocObjectCount > setAllocRecordMax)， 如果大于setAllocRecordMax，就
+jbyteArray allocData = getARTAllocatio nData();
+SaveAllocationData saveData{allocData};
+saveARTAllocationData(saveData);
+
+以上代码就是把数据保存在log文件里面的实现。
